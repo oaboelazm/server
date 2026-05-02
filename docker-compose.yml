@@ -134,6 +134,8 @@ services:
     image: nginx:alpine
     container_name: landing
     restart: always
+    volumes:
+      - ./landing:/usr/share/nginx/html
     networks:
       - app_net
 
@@ -141,6 +143,8 @@ services:
     image: nginx:alpine
     container_name: app
     restart: always
+    volumes:
+      - ./app:/usr/share/nginx/html
     networks:
       - app_net
 
@@ -148,6 +152,8 @@ services:
     image: nginx:alpine
     container_name: api
     restart: always
+    volumes:
+      - ./api:/usr/share/nginx/html
     networks:
       - app_net     # Receives traffic from Reverse Proxy
       - data_net    # Sole application layer allowed to access the database
