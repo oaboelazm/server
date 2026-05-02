@@ -1,0 +1,159 @@
+version: "3.8"
+
+networks:
+  edge_net:
+    external: true
+
+  infra_net:
+    external: true
+
+  app_net:
+    driver: bridge
+
+  data_net:
+    internal: true
+
+services:
+  # ----------------------------------------------------
+  # 1. Reverse Proxy Layer (Nginx Proxy Manager)
+  # ----------------------------------------------------
+  nginx-proxy-manager:
+    image: "jc21/nginx-proxy-manager:latest"
+    container_name: reverse-proxy
+    restart: always
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:81/ || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    ports:
+      # Public HTTP/HTTPS ports
+      - "80:80"
+      - "443:443"
+      # Admin panel bound ONLY to localhost
+      - "127.0.0.1:81:81"
+    environment:
+      DB_MYSQL_HOST: "npm_db"
+      DB_MYSQL_PORT: 3306
+      DB_MYSQL_USER: "npm"
+      DB_MYSQL_PASSWORD: "${NPM_DB_PASSWORD}"
+      DB_MYSQL_NAME: "npm"
+    volumes:
+      - npm_data:/data
+      - npm_letsencrypt:/etc/letsencrypt
+    networks:
+      - edge_net    # For incoming public traffic (ports 80/443)
+      - app_net     # For routing to internal backend/frontend services
+      - infra_net   # For accessing the Proxy Manager's MariaDB database
+    depends_on:
+      npm_db:
+        condition: service_healthy
+
+  # ----------------------------------------------------
+  # Control Database Layer
+  # ----------------------------------------------------
+  npm_db:
+    image: "mariadb:10.11"
+    container_name: npm_db
+    restart: always
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "MYSQL_PWD=$$MYSQL_ROOT_PASSWORD mysqladmin ping -h 127.0.0.1 -u root || exit 1",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+    environment:
+      MYSQL_ROOT_PASSWORD: "${NPM_DB_ROOT_PASSWORD}"
+      MYSQL_DATABASE: "npm"
+      MYSQL_USER: "npm"
+      MYSQL_PASSWORD: "${NPM_DB_PASSWORD}"
+    volumes:
+      - npm_db_data:/var/lib/mysql
+    networks:
+      - infra_net
+
+  # ----------------------------------------------------
+  # 2. SaaS Database Layer
+  # ----------------------------------------------------
+  saas_db:
+    image: mysql:8.0
+    container_name: saas_db
+    restart: always
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "MYSQL_PWD=$$MYSQL_ROOT_PASSWORD mysqladmin ping -h 127.0.0.1 -u root || exit 1",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+    environment:
+      MYSQL_ROOT_PASSWORD: "${MYSQL_ROOT_PASSWORD}"
+      MYSQL_DATABASE: "${MYSQL_DATABASE}"
+      MYSQL_USER: "${MYSQL_USER}"
+      MYSQL_PASSWORD: "${MYSQL_PASSWORD}"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    networks:
+      data_net:
+        aliases:
+          - saas-db
+    # Note: No ports exposed to host. Access only via Docker networks.
+
+  # ----------------------------------------------------
+  # 3. Database UI (phpMyAdmin)
+  # ----------------------------------------------------
+  phpmyadmin:
+    image: phpmyadmin/phpmyadmin
+    container_name: phpmyadmin
+    restart: always
+    ports:
+      # Bound ONLY to localhost to prevent direct public exposure.
+      # Access this securely via SSH port forwarding or Tailscale.
+      - "127.0.0.1:8080:80"
+    environment:
+      PMA_HOST: saas_db
+      PMA_PORT: 3306
+      UPLOAD_LIMIT: 300M
+    networks:
+      - data_net    # Strictly limited to the data layer for managing the SaaS DB
+    depends_on:
+      saas_db:
+        condition: service_healthy
+
+  # ----------------------------------------------------
+  # 3. SaaS Application Layer
+  # ----------------------------------------------------
+  landing:
+    image: nginx:alpine
+    container_name: landing
+    restart: always
+    networks:
+      - app_net
+
+  app:
+    image: nginx:alpine
+    container_name: app
+    restart: always
+    networks:
+      - app_net
+
+  api:
+    image: nginx:alpine
+    container_name: api
+    restart: always
+    networks:
+      - app_net     # Receives traffic from Reverse Proxy
+      - data_net    # Sole application layer allowed to access the database
+
+volumes:
+  npm_data:
+  npm_letsencrypt:
+  npm_db_data:
+  mysql_data:
